@@ -45,3 +45,20 @@ def test_out_path():
     from scrape import out_path, DEFAULT_OUT
     assert out_path("マルハン富山インター店", None) == DEFAULT_OUT
     assert out_path("A B/店", None) == Path("data/A_B_店.csv")
+
+
+def test_out_path_with_keywords():
+    from pathlib import Path
+    from scrape import out_path
+    assert out_path("マルハン富山インター店", None, ["ジャグラー", "ハナハナ"]) == Path("data/maruhan_toyama_inter_ジャグラー_ハナハナ.csv")
+
+
+def test_machine_filter():
+    from scrape import scrape_day
+    calls = []
+    class C:
+        def get(self, url):
+            calls.append(url)
+            return read("day_2026-09-28.html") if len(calls) == 1 else read("kishu_neo_imjuggler_ex.html")
+    date, rows = scrape_day(C(), "https://min-repo.com/3378289/", keywords=["ネオアイムジャグラー"])
+    assert len(calls) == 2 and len(rows) == 24

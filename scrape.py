@@ -226,7 +226,7 @@ class TooOld(Exception):
     """--since より古い日に到達した(一覧は新しい順なので、以降は不要)"""
 
 
-def scrape_day(client, day_url, done=(), since=None, newest=None):
+def scrape_day(client, day_url, done=(), since=None, newest=None, keywords=()):
     html = client.get(day_url)
     try:
         date, machines, singles = parse_day(html)
@@ -242,6 +242,8 @@ def scrape_day(client, day_url, done=(), since=None, newest=None):
         return None, []
     if date.isoformat() in done:  # 取得済みの日は機種ページを取りに行かない
         return None, []
+    if keywords:  # 機種名に含まれるキーワードで絞る(取得するリクエストも減る)
+        machines = [m for m in machines if any(k in m for k in keywords)]
     rows = []
     for name in machines:
         page = client.get(kishu_url(day_url, name))
@@ -252,18 +254,20 @@ def scrape_day(client, day_url, done=(), since=None, newest=None):
     return date, rows
 
 
-def out_path(store, out):
+def out_path(store, out, keywords=()):
+    """出力先。機種を絞った場合は別ファイルにする(取得済み日付の判定が全機種版と混ざらないように)"""
     if out:
         return out
-    if store == DEFAULT_STORE:
-        return DEFAULT_OUT
-    safe = re.sub(r'[\\/:*?"<>|\s]', "_", store)
-    return DEFAULT_OUT.parent / (safe + ".csv")
+    base = DEFAULT_OUT.stem if store == DEFAULT_STORE else re.sub(r'[\\/:*?"<>|\s]', "_", store)
+    if keywords:
+        base += "_" + "_".join(keywords)
+    return DEFAULT_OUT.parent / (base + ".csv")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", action="append", help=f"店名(複数指定可・既定: {DEFAULT_STORE})")
+    ap.add_argument("--machine", action="append", help="機種名に含まれる語で絞る(複数指定可。例: --machine ジャグラー --machine ハナハナ)")
     ap.add_argument("--out", type=Path, help="出力CSV(店舗1つのときのみ。既定は data/<店名>.csv)")
     ap.add_argument("--delay", type=float, default=1.5, help="リクエスト間隔(秒)")
     ap.add_argument("--limit", type=int, help="店舗ごとに取得する日数の上限(新しい順)")
@@ -280,7 +284,7 @@ def main():
     try:
         for store in stores:  # 店舗は1つずつ順番に(並列にしない)
             print(f"=== {store} ===")
-            path = out_path(store, a.out)
+            path = out_path(store, a.out, a.machine)
             path.parent.mkdir(parents=True, exist_ok=True)
             done = set()
             if path.exists():
@@ -305,7 +309,7 @@ def _run(a, client, day_urls, done, new_file, path):
             if a.limit is not None and count >= a.limit:
                 break
             try:
-                date, rows = scrape_day(client, url, done, a.since, newest)
+                date, rows = scrape_day(client, url, done, a.since, newest, a.machine)
             except TooOld:
                 break
             if date is None:
