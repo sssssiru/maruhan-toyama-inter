@@ -180,10 +180,11 @@ class BrowserClient:
                     return None
                 # JS確認ページなら、確認が通った後にもう一度開き直す(最大4回)
                 for _ in range(4):
-                    self.page.wait_for_timeout(2000)
-                    html = self.page.content()
-                    if "<h1" in html and CHALLENGE_MARK not in html:
-                        return html
+                    for _ in range(7):  # 表示されればすぐ次へ(最大約2秒待つ)
+                        self.page.wait_for_timeout(300)
+                        html = self.page.content()
+                        if "<h1" in html and CHALLENGE_MARK not in html:
+                            return html
                     self.page.goto(url, timeout=45000, wait_until="domcontentloaded")
                 raise RuntimeError("確認ページを通過できませんでした")
             except Exception as e:  # noqa: BLE001
