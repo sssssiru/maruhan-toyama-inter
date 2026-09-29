@@ -32,3 +32,16 @@ def test_kishu():
 
 def test_kishu_url():
     assert kishu_url("https://min-repo.com/1/", "A B") == "https://min-repo.com/1/?kishu=A+B"
+
+
+def test_tag_url():
+    from scrape import tag_url
+    assert tag_url("マルハン富山インター店") == "https://min-repo.com/tag/%e3%83%9e%e3%83%ab%e3%83%8f%e3%83%b3%e5%af%8c%e5%b1%b1%e3%82%a4%e3%83%b3%e3%82%bf%e3%83%bc%e5%ba%97/"
+    assert tag_url("KYORAKU西店").startswith("https://min-repo.com/tag/KYORAKU%e8%a5%bf")
+
+
+def test_out_path():
+    from pathlib import Path
+    from scrape import out_path, DEFAULT_OUT
+    assert out_path("マルハン富山インター店", None) == DEFAULT_OUT
+    assert out_path("A B/店", None) == Path("data/A_B_店.csv")

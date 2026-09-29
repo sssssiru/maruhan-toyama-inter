@@ -20,7 +20,15 @@ from urllib.parse import quote, quote_plus, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-TAG_URL = "https://min-repo.com/tag/%e3%83%9e%e3%83%ab%e3%83%8f%e3%83%b3%e5%af%8c%e5%b1%b1%e3%82%a4%e3%83%b3%e3%82%bf%e3%83%bc%e5%ba%97/"
+DEFAULT_STORE = "マルハン富山インター店"
+
+
+def tag_url(store):
+    """店名 -> みんレポのタグ一覧URL(店名はサイト上のタグ名と完全一致が必要)"""
+    enc = re.sub(r"%[0-9A-F]{2}", lambda m: m.group().lower(), quote(store))
+    return f"https://min-repo.com/tag/{enc}/"
+
+
 # 差枚はサイト側で0固定(非公開)のため出力しない
 FIELDS = ["date", "machine", "unit_no", "games", "bb", "rb"]
 DEFAULT_OUT = Path("data/maruhan_toyama_inter.csv")
@@ -200,11 +208,14 @@ class BrowserClient:
         self._pw.stop()
 
 
-def collect_day_urls(client):
-    html = client.get(TAG_URL)
+def collect_day_urls(client, store):
+    base = tag_url(store)
+    html = client.get(base)
+    if html is None:
+        raise SystemExit(f"店舗が見つかりません: {store}\n(みんレポ上のタグ名と完全に一致する店名を指定してください: {base})")
     urls, pages = parse_tag_page(html)
     for p in range(2, pages + 1):
-        html = client.get(f"{TAG_URL}page/{p}/")
+        html = client.get(f"{base}page/{p}/")
         if html is None:
             break
         urls += [u for u in parse_tag_page(html)[0] if u not in urls]
@@ -241,39 +252,52 @@ def scrape_day(client, day_url, done=(), since=None, newest=None):
     return date, rows
 
 
+def out_path(store, out):
+    if out:
+        return out
+    if store == DEFAULT_STORE:
+        return DEFAULT_OUT
+    safe = re.sub(r'[\\/:*?"<>|\s]', "_", store)
+    return DEFAULT_OUT.parent / (safe + ".csv")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--store", action="append", help=f"店名(複数指定可・既定: {DEFAULT_STORE})")
+    ap.add_argument("--out", type=Path, help="出力CSV(店舗1つのときのみ。既定は data/<店名>.csv)")
     ap.add_argument("--delay", type=float, default=1.5, help="リクエスト間隔(秒)")
-    ap.add_argument("--limit", type=int, help="取得する日数の上限(新しい順)")
+    ap.add_argument("--limit", type=int, help="店舗ごとに取得する日数の上限(新しい順)")
     ap.add_argument("--headed", action="store_true", help="ブラウザ画面を表示して実行(--browserと併用)")
     ap.add_argument("--since", type=dt.date.fromisoformat, help="この日付(YYYY-MM-DD)以降だけ取得")
     ap.add_argument("--skip-recent", type=int, default=2, help="直近N日は集計途中の可能性があるため取得しない(既定2)")
     ap.add_argument("--browser", action="store_true", help="実ブラウザ(Playwright)で取得する")
     a = ap.parse_args()
-
-    a.out.parent.mkdir(parents=True, exist_ok=True)
-    done = set()
-    if a.out.exists():
-        with a.out.open(encoding="utf-8-sig", newline="") as f:
-            done = {r["date"] for r in csv.DictReader(f)}
-    new_file = not a.out.exists()
+    stores = a.store or [DEFAULT_STORE]
+    if a.out and len(stores) > 1:
+        ap.error("--out は店舗を1つだけ指定したときに使えます")
 
     client = BrowserClient(a.delay, headless=not a.headed) if a.browser else Client(a.delay)
-    day_urls = collect_day_urls(client)
-    print(f"{len(day_urls)}日分の記事を発見 / 取得済み {len(done)}日")
-
     try:
-        _run(a, client, day_urls, done, new_file)
+        for store in stores:  # 店舗は1つずつ順番に(並列にしない)
+            print(f"=== {store} ===")
+            path = out_path(store, a.out)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            done = set()
+            if path.exists():
+                with path.open(encoding="utf-8-sig", newline="") as f:
+                    done = {r["date"] for r in csv.DictReader(f)}
+            day_urls = collect_day_urls(client, store)
+            print(f"{len(day_urls)}日分の記事を発見 / 取得済み {len(done)}日 -> {path}")
+            _run(a, client, day_urls, done, not path.exists(), path)
     finally:
         if hasattr(client, "close"):
             client.close()
 
 
-def _run(a, client, day_urls, done, new_file):
+def _run(a, client, day_urls, done, new_file, path):
     newest = dt.date.today() - dt.timedelta(days=a.skip_recent)
     count = 0
-    with a.out.open("a", encoding="utf-8-sig", newline="") as f:
+    with path.open("a", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, FIELDS, extrasaction="ignore")
         if new_file:
             w.writeheader()
