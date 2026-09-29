@@ -1,0 +1,81 @@
+# みんレポ 台データ スクレイパー
+
+[みんレポ](https://min-repo.com/)から店舗ごとの日別台データ(日付・機種名・台番号・ゲーム数・BB・RB)を取得し、
+統計解析用に1台1行のCSVとして保存する。
+
+## セットアップ(初回のみ)
+
+```
+pip install -r requirements.txt
+playwright install chromium
+```
+
+## 使い方
+
+```
+python scrape.py --browser --headed [オプション]
+```
+
+サイトのJS確認画面を通すため `--browser` が必須。`--headed`(ブラウザ画面を表示)で動作確認済み。
+実行中はブラウザを閉じない・PCをスリープさせない(他のウィンドウを上に重ねるのはOK)。
+
+### 例
+
+```
+# 動作確認(新しい2日分だけ)
+python scrape.py --browser --headed --limit 2
+
+# 富山インター店・1.5年分・全機種(約18〜21時間)
+python scrape.py --browser --headed --since 2025-03-29
+
+# ジャグラーとハナハナだけ(約2〜3時間)
+python scrape.py --browser --headed --machine ジャグラー --machine ハナハナ --since 2025-03-29
+
+# 別の店舗(店名はみんレポ上のタグ名と完全一致)
+python scrape.py --browser --headed --store "店名" --machine ジャグラー --since 2025-03-29
+
+# 複数店舗(1店舗ずつ順番に)
+python scrape.py --browser --headed --store "店名A" --store "店名B" --machine ジャグラー --machine ハナハナ --since 2025-03-29
+```
+
+### オプション
+
+| オプション | 内容 |
+|---|---|
+| `--browser` | 実ブラウザ(Playwright)で取得する。**必須** |
+| `--headed` | ブラウザ画面を表示する |
+| `--store 店名` | 対象店舗(複数指定可)。既定はマルハン富山インター店 |
+| `--machine 語` | 機種名にその語を含む機種だけ取得(複数指定可)。リクエストが減り速くなる |
+| `--since YYYY-MM-DD` | その日以降だけ取得 |
+| `--limit N` | 店舗ごとに新しい順でN日分だけ取得 |
+| `--skip-recent N` | 直近N日は取得しない(既定2。集計途中のデータを避ける) |
+| `--delay 秒` | リクエスト間隔(既定1.5) |
+| `--out パス` | 出力CSV(店舗1つのときのみ) |
+
+## 出力
+
+`data/` 以下にUTF-8(BOM付き)のCSV。列: `date, machine, unit_no, games, bb, rb`
+
+| 条件 | ファイル名 |
+|---|---|
+| 富山インター店・全機種 | `data/maruhan_toyama_inter.csv` |
+| 富山インター店・`--machine ジャグラー --machine ハナハナ` | `data/maruhan_toyama_inter_ジャグラー_ハナハナ.csv` |
+| 他店舗 | `data/<店名>.csv`(機種を絞ると `_<語>` が付く) |
+
+- 差枚はサイトが0固定で出しているため出力しない。
+- 取得済みの日付はスキップするので、中断しても再実行で続きから再開できる。
+  機種を絞った場合は別ファイルになるため、全機種版とは混ざらない。
+- 台データが取れない日や想定外のページは `debug/` にHTMLを保存してスキップする。
+
+## 注意
+
+- 大量取得の前にみんレポの利用規約を確認すること。店舗の並列実行や間隔の短縮は避ける。
+- CAPTCHAなどの明確なアクセス制限が出た場合は、回避せず手動保存したHTMLからの取り込みに切り替える。
+- 機種名は表記ゆれ(全角/半角、「真打 吉宗」と「吉宗」など)があるので、解析前に名寄せする。
+- 直近の日は集計途中で0Gの台が多いことがある。
+
+## テスト
+
+```
+pytest
+```
