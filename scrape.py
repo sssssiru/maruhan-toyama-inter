@@ -9,6 +9,7 @@
 """
 import argparse
 import csv
+import os
 import datetime as dt
 import re
 import sys
@@ -22,6 +23,7 @@ from bs4 import BeautifulSoup
 TAG_URL = "https://min-repo.com/tag/%e3%83%9e%e3%83%ab%e3%83%8f%e3%83%b3%e5%af%8c%e5%b1%b1%e3%82%a4%e3%83%b3%e3%82%bf%e3%83%bc%e5%ba%97/"
 FIELDS = ["date", "machine", "unit_no", "games", "bb", "rb", "diff_medals"]
 DEFAULT_OUT = Path("data/maruhan_toyama_inter.csv")
+CHALLENGE_MARK = "w_scd_n"  # ブラウザ確認(JS)ページの目印
 DAY_URL_RE = re.compile(r"^https://min-repo\.com/\d+/?$")
 
 
@@ -144,11 +146,47 @@ class Client:
                 r.raise_for_status()
                 if not r.text.strip():
                     raise RuntimeError("空のレスポンス(アクセス制限の可能性)")
+                if CHALLENGE_MARK in r.text:
+                    raise SystemExit("サイトのブラウザ確認画面が返されました。--browser を付けて実行してください。")
                 return r.text
             except Exception as e:  # noqa: BLE001
                 print(f"  retry {n + 1}/{tries}: {url} ({e})", file=sys.stderr)
                 time.sleep(2 ** (n + 1))
         raise RuntimeError(f"取得失敗: {url}")
+
+
+class BrowserClient:
+    """実ブラウザ(Chromium)でページを開く。サイトのJS確認を通常のブラウザ同様に通過させる。"""
+
+    def __init__(self, delay, headless=True):
+        from playwright.sync_api import sync_playwright
+        self.delay = delay
+        self.last = 0.0
+        self._pw = sync_playwright().start()
+        self.browser = self._pw.chromium.launch(headless=headless, executable_path=os.environ.get("CHROMIUM_PATH") or None)
+        self.page = self.browser.new_page()
+
+    def get(self, url, tries=3):
+        for n in range(tries):
+            wait = self.delay - (time.time() - self.last)
+            if wait > 0:
+                time.sleep(wait)
+            self.last = time.time()
+            try:
+                resp = self.page.goto(url, timeout=45000)
+                if resp is not None and resp.status == 404:
+                    return None
+                # 確認ページの場合はJSが自動でリロードするので、本物のページの<h1>を待つ
+                self.page.wait_for_selector("h1", timeout=30000)
+                return self.page.content()
+            except Exception as e:  # noqa: BLE001
+                print(f"  retry {n + 1}/{tries}: {url} ({e})", file=sys.stderr)
+                time.sleep(2 ** (n + 1))
+        raise RuntimeError(f"取得失敗: {url}")
+
+    def close(self):
+        self.browser.close()
+        self._pw.stop()
 
 
 def collect_day_urls(client):
@@ -162,7 +200,7 @@ def collect_day_urls(client):
     return urls
 
 
-def scrape_day(client, day_url):
+def scrape_day(client, day_url, done=()):
     html = client.get(day_url)
     try:
         date, machines, singles = parse_day(html)
@@ -171,6 +209,8 @@ def scrape_day(client, day_url):
         dump = Path("debug") / f"{urlparse(day_url).path.strip('/')}.html"
         dump.write_text(html, encoding="utf-8")
         print(f"  想定外のページ: {day_url} -> {dump} に保存(スキップ)", file=sys.stderr)
+        return None, []
+    if date.isoformat() in done:  # 取得済みの日は機種ページを取りに行かない
         return None, []
     rows = []
     for name in machines:
@@ -187,6 +227,7 @@ def main():
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--delay", type=float, default=1.5, help="リクエスト間隔(秒)")
     ap.add_argument("--limit", type=int, help="取得する日数の上限(新しい順)")
+    ap.add_argument("--browser", action="store_true", help="実ブラウザ(Playwright)で取得する")
     a = ap.parse_args()
 
     a.out.parent.mkdir(parents=True, exist_ok=True)
@@ -196,10 +237,18 @@ def main():
             done = {r["date"] for r in csv.DictReader(f)}
     new_file = not a.out.exists()
 
-    client = Client(a.delay)
+    client = BrowserClient(a.delay) if a.browser else Client(a.delay)
     day_urls = collect_day_urls(client)
     print(f"{len(day_urls)}日分の記事を発見 / 取得済み {len(done)}日")
 
+    try:
+        _run(a, client, day_urls, done, new_file)
+    finally:
+        if hasattr(client, "close"):
+            client.close()
+
+
+def _run(a, client, day_urls, done, new_file):
     count = 0
     with a.out.open("a", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, FIELDS)
@@ -208,8 +257,8 @@ def main():
         for url in day_urls:
             if a.limit is not None and count >= a.limit:
                 break
-            date, rows = scrape_day(client, url)
-            if date is None or date.isoformat() in done:
+            date, rows = scrape_day(client, url, done)
+            if date is None:
                 continue
             w.writerows(rows)
             f.flush()
