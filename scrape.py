@@ -172,17 +172,26 @@ class BrowserClient:
             if wait > 0:
                 time.sleep(wait)
             self.last = time.time()
+            html = ""
             try:
-                resp = self.page.goto(url, timeout=45000)
+                resp = self.page.goto(url, timeout=45000, wait_until="domcontentloaded")
                 if resp is not None and resp.status == 404:
                     return None
-                # 確認ページの場合はJSが自動でリロードするので、本物のページの<h1>を待つ
-                self.page.wait_for_selector("h1", timeout=30000)
-                return self.page.content()
+                # JS確認ページなら、確認が通った後にもう一度開き直す(最大4回)
+                for _ in range(4):
+                    self.page.wait_for_timeout(2000)
+                    html = self.page.content()
+                    if "<h1" in html and CHALLENGE_MARK not in html:
+                        return html
+                    self.page.goto(url, timeout=45000, wait_until="domcontentloaded")
+                raise RuntimeError("確認ページを通過できませんでした")
             except Exception as e:  # noqa: BLE001
                 print(f"  retry {n + 1}/{tries}: {url} ({e})", file=sys.stderr)
+                Path("debug").mkdir(exist_ok=True)
+                name = urlparse(url).path.strip("/") or "top"
+                (Path("debug") / f"browser_{name}.html").write_text(html or self.page.content(), encoding="utf-8")
                 time.sleep(2 ** (n + 1))
-        raise RuntimeError(f"取得失敗: {url}")
+        raise RuntimeError(f"取得失敗: {url} (debug/ にHTMLを保存)")
 
     def close(self):
         self.browser.close()
@@ -227,6 +236,7 @@ def main():
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--delay", type=float, default=1.5, help="リクエスト間隔(秒)")
     ap.add_argument("--limit", type=int, help="取得する日数の上限(新しい順)")
+    ap.add_argument("--headed", action="store_true", help="ブラウザ画面を表示して実行(--browserと併用)")
     ap.add_argument("--browser", action="store_true", help="実ブラウザ(Playwright)で取得する")
     a = ap.parse_args()
 
@@ -237,7 +247,7 @@ def main():
             done = {r["date"] for r in csv.DictReader(f)}
     new_file = not a.out.exists()
 
-    client = BrowserClient(a.delay) if a.browser else Client(a.delay)
+    client = BrowserClient(a.delay, headless=not a.headed) if a.browser else Client(a.delay)
     day_urls = collect_day_urls(client)
     print(f"{len(day_urls)}日分の記事を発見 / 取得済み {len(done)}日")
 
