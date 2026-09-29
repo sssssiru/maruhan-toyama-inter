@@ -56,8 +56,10 @@ def parse_day(html):
     年は記事に載っていないので、公開日時(datePublished)から補う。
     """
     s = soup(html)
-    h1 = s.find("h1").get_text(strip=True)
-    m = re.match(r"(\d+)/(\d+)", h1)
+    h1 = s.find("h1")
+    m = re.match(r"(\d+)/(\d+)", h1.get_text(strip=True)) if h1 else None
+    if not m:
+        raise ValueError("日別ページの見出しが見つかりません")
     month, day = int(m.group(1)), int(m.group(2))
     pub = re.search(r'"datePublished":"(\d{4})-(\d{2})-(\d{2})', html)
     pub_date = dt.date(*map(int, pub.groups()))
@@ -122,7 +124,11 @@ class Client:
     def __init__(self, delay):
         self.delay = delay
         self.s = requests.Session()
-        self.s.headers["User-Agent"] = "Mozilla/5.0 (compatible; personal-research-scraper)"
+        self.s.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ja,en;q=0.8",
+        })
         self.last = 0.0
 
     def get(self, url, tries=4):
@@ -158,7 +164,14 @@ def collect_day_urls(client):
 
 def scrape_day(client, day_url):
     html = client.get(day_url)
-    date, machines, singles = parse_day(html)
+    try:
+        date, machines, singles = parse_day(html)
+    except ValueError:
+        Path("debug").mkdir(exist_ok=True)
+        dump = Path("debug") / f"{urlparse(day_url).path.strip('/')}.html"
+        dump.write_text(html, encoding="utf-8")
+        print(f"  想定外のページ: {day_url} -> {dump} に保存(スキップ)", file=sys.stderr)
+        return None, []
     rows = []
     for name in machines:
         page = client.get(kishu_url(day_url, name))
@@ -196,7 +209,7 @@ def main():
             if a.limit is not None and count >= a.limit:
                 break
             date, rows = scrape_day(client, url)
-            if date.isoformat() in done:
+            if date is None or date.isoformat() in done:
                 continue
             w.writerows(rows)
             f.flush()
