@@ -147,7 +147,7 @@ class Client:
         })
         self.last = 0.0
 
-    def get(self, url, tries=4):
+    def get(self, url, tries=4, expect=None):
         for n in range(tries):
             wait = self.delay - (time.time() - self.last)
             if wait > 0:
@@ -190,7 +190,7 @@ class BrowserClient:
         except Exception:  # noqa: BLE001
             return False
 
-    def get(self, url, tries=3):
+    def get(self, url, tries=3, expect=None):
         for n in range(tries):
             wait = self.delay - (time.time() - self.last)
             if wait > 0:
@@ -219,7 +219,7 @@ class BrowserClient:
                                 continue
                             raise
                         if "<h1" in html and CHALLENGE_MARK not in html:
-                            return html
+                            return self._settle(html, expect)
                     self.page.goto(url, timeout=45000, wait_until="domcontentloaded")
                 raise RuntimeError("確認ページを通過できませんでした")
             except Exception as e:  # noqa: BLE001
@@ -232,6 +232,18 @@ class BrowserClient:
                     pass
                 time.sleep(2 ** (n + 1))
         raise RuntimeError(f"取得失敗: {url} (debug/ にHTMLを保存)")
+
+    def _settle(self, html, expect):
+        """表などがJSで後から描画されるページ向け: 目印(expect)が出るまで最大約5秒待つ(読み込み途中で取りこぼさない)"""
+        for _ in range(16):
+            if not expect or expect in html:
+                break
+            self.page.wait_for_timeout(300)
+            try:
+                html = self.page.content()
+            except Exception:  # noqa: BLE001
+                pass
+        return html
 
     def close(self):
         self.browser.close()
@@ -275,7 +287,7 @@ def scrape_day(client, day_url, done=(), since=None, newest=None, keywords=()):
         machines = [m for m in machines if any(k in m for k in keywords)]
     rows = []
     for name in machines:
-        page = client.get(kishu_url(day_url, name))
+        page = client.get(kishu_url(day_url, name), expect="<th>台番</th>")
         got = parse_kishu(page, date, name) if page else []
         if not got and name in singles:  # 機種別ページが取れない1台機種は日別ページの値で代用(BB/RBなし)
             got = [{"date": date.isoformat(), "machine": name, "bb": None, "rb": None, **singles[name]}]

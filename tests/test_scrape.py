@@ -57,7 +57,7 @@ def test_machine_filter():
     from scrape import scrape_day
     calls = []
     class C:
-        def get(self, url):
+        def get(self, url, **kw):
             calls.append(url)
             return read("day_2026-09-28.html") if len(calls) == 1 else read("kishu_neo_imjuggler_ex.html")
     date, rows = scrape_day(C(), "https://min-repo.com/3378289/", keywords=["ネオアイムジャグラー"])
@@ -76,6 +76,6 @@ def test_unexpected_page_counts_as_failure(tmp_path, monkeypatch):
     from scrape import scrape_day
     monkeypatch.chdir(tmp_path)
     class C:
-        def get(self, url): return "<html>blocked</html>"
+        def get(self, url, **kw): return "<html>blocked</html>"
     with pytest.raises(RuntimeError):
         scrape_day(C(), "https://min-repo.com/1/")
