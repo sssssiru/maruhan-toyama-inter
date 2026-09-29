@@ -20,6 +20,7 @@ from urllib.parse import quote, quote_plus, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+MAX_FAILURES = 5  # 連続でこの日数失敗したら停止(サイトへの無駄なアクセスを避ける)
 DEFAULT_STORE = "マルハン富山インター店"
 
 
@@ -171,9 +172,19 @@ class BrowserClient:
         from playwright.sync_api import sync_playwright
         self.delay = delay
         self.last = 0.0
+        self.headless = headless
         self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.launch(headless=headless, executable_path=os.environ.get("CHROMIUM_PATH") or None)
+        self._launch()
+
+    def _launch(self):
+        self.browser = self._pw.chromium.launch(headless=self.headless, executable_path=os.environ.get("CHROMIUM_PATH") or None)
         self.page = self.browser.new_page()
+
+    def _alive(self):
+        try:
+            return self.browser.is_connected() and not self.page.is_closed()
+        except Exception:  # noqa: BLE001
+            return False
 
     def get(self, url, tries=3):
         for n in range(tries):
@@ -183,6 +194,13 @@ class BrowserClient:
             self.last = time.time()
             html = ""
             try:
+                if not self._alive():
+                    print("  ブラウザが閉じていたので起動し直します", file=sys.stderr)
+                    try:
+                        self.browser.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._launch()
                 resp = self.page.goto(url, timeout=45000, wait_until="domcontentloaded")
                 if resp is not None and resp.status == 404:
                     return None
@@ -199,7 +217,10 @@ class BrowserClient:
                 print(f"  retry {n + 1}/{tries}: {url} ({e})", file=sys.stderr)
                 Path("debug").mkdir(exist_ok=True)
                 name = urlparse(url).path.strip("/") or "top"
-                (Path("debug") / f"browser_{name}.html").write_text(html or self.page.content(), encoding="utf-8")
+                try:
+                    (Path("debug") / f"browser_{name}.html").write_text(html or self.page.content(), encoding="utf-8")
+                except Exception:  # noqa: BLE001  (ブラウザが落ちていて保存できない場合)
+                    pass
                 time.sleep(2 ** (n + 1))
         raise RuntimeError(f"取得失敗: {url} (debug/ にHTMLを保存)")
 
@@ -293,6 +314,8 @@ def main():
             day_urls = collect_day_urls(client, store)
             print(f"{len(day_urls)}日分の記事を発見 / 取得済み {len(done)}日 -> {path}")
             _run(a, client, day_urls, done, not path.exists(), path)
+    except KeyboardInterrupt:
+        print("\n中断しました。再実行すれば取得済みの日をスキップして続きから再開します。")
     finally:
         if hasattr(client, "close"):
             client.close()
@@ -301,6 +324,7 @@ def main():
 def _run(a, client, day_urls, done, new_file, path):
     newest = dt.date.today() - dt.timedelta(days=a.skip_recent)
     count = 0
+    failures = 0
     with path.open("a", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, FIELDS, extrasaction="ignore")
         if new_file:
@@ -310,8 +334,15 @@ def _run(a, client, day_urls, done, new_file, path):
                 break
             try:
                 date, rows = scrape_day(client, url, done, a.since, newest, a.machine)
+                failures = 0
             except TooOld:
                 break
+            except RuntimeError as e:  # この日は諦めて次へ(再実行すれば取り直す)
+                failures += 1
+                print(f"  スキップ: {url} ({e})", file=sys.stderr)
+                if failures >= MAX_FAILURES:
+                    raise SystemExit(f"{MAX_FAILURES}日連続で失敗したため停止します。しばらく置いてから再実行してください。")
+                continue
             if date is None:
                 continue
             w.writerows(rows)
