@@ -208,7 +208,12 @@ class BrowserClient:
                 for _ in range(4):
                     for _ in range(7):  # 表示されればすぐ次へ(最大約2秒待つ)
                         self.page.wait_for_timeout(300)
-                        html = self.page.content()
+                        try:
+                            html = self.page.content()
+                        except Exception as e:  # noqa: BLE001
+                            if "navigating" in str(e):  # 確認画面のリロード中は読めないので待つ
+                                continue
+                            raise
                         if "<h1" in html and CHALLENGE_MARK not in html:
                             return html
                     self.page.goto(url, timeout=45000, wait_until="domcontentloaded")
