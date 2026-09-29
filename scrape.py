@@ -21,7 +21,8 @@ import requests
 from bs4 import BeautifulSoup
 
 TAG_URL = "https://min-repo.com/tag/%e3%83%9e%e3%83%ab%e3%83%8f%e3%83%b3%e5%af%8c%e5%b1%b1%e3%82%a4%e3%83%b3%e3%82%bf%e3%83%bc%e5%ba%97/"
-FIELDS = ["date", "machine", "unit_no", "games", "bb", "rb", "diff_medals"]
+# 差枚はサイト側で0固定(非公開)のため出力しない
+FIELDS = ["date", "machine", "unit_no", "games", "bb", "rb"]
 DEFAULT_OUT = Path("data/maruhan_toyama_inter.csv")
 CHALLENGE_MARK = "w_scd_n"  # ブラウザ確認(JS)ページの目印
 DAY_URL_RE = re.compile(r"^https://min-repo\.com/\d+/?$")
@@ -209,7 +210,11 @@ def collect_day_urls(client):
     return urls
 
 
-def scrape_day(client, day_url, done=()):
+class TooOld(Exception):
+    """--since より古い日に到達した(一覧は新しい順なので、以降は不要)"""
+
+
+def scrape_day(client, day_url, done=(), since=None, newest=None):
     html = client.get(day_url)
     try:
         date, machines, singles = parse_day(html)
@@ -218,6 +223,10 @@ def scrape_day(client, day_url, done=()):
         dump = Path("debug") / f"{urlparse(day_url).path.strip('/')}.html"
         dump.write_text(html, encoding="utf-8")
         print(f"  想定外のページ: {day_url} -> {dump} に保存(スキップ)", file=sys.stderr)
+        return None, []
+    if since and date < since:
+        raise TooOld
+    if newest and date > newest:  # 集計途中の直近日は取らない
         return None, []
     if date.isoformat() in done:  # 取得済みの日は機種ページを取りに行かない
         return None, []
@@ -237,6 +246,8 @@ def main():
     ap.add_argument("--delay", type=float, default=1.5, help="リクエスト間隔(秒)")
     ap.add_argument("--limit", type=int, help="取得する日数の上限(新しい順)")
     ap.add_argument("--headed", action="store_true", help="ブラウザ画面を表示して実行(--browserと併用)")
+    ap.add_argument("--since", type=dt.date.fromisoformat, help="この日付(YYYY-MM-DD)以降だけ取得")
+    ap.add_argument("--skip-recent", type=int, default=2, help="直近N日は集計途中の可能性があるため取得しない(既定2)")
     ap.add_argument("--browser", action="store_true", help="実ブラウザ(Playwright)で取得する")
     a = ap.parse_args()
 
@@ -259,15 +270,19 @@ def main():
 
 
 def _run(a, client, day_urls, done, new_file):
+    newest = dt.date.today() - dt.timedelta(days=a.skip_recent)
     count = 0
     with a.out.open("a", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, FIELDS)
+        w = csv.DictWriter(f, FIELDS, extrasaction="ignore")
         if new_file:
             w.writeheader()
         for url in day_urls:
             if a.limit is not None and count >= a.limit:
                 break
-            date, rows = scrape_day(client, url, done)
+            try:
+                date, rows = scrape_day(client, url, done, a.since, newest)
+            except TooOld:
+                break
             if date is None:
                 continue
             w.writerows(rows)
