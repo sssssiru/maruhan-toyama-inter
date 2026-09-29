@@ -69,15 +69,19 @@ def parse_day(html):
     """
     s = soup(html)
     h1 = s.find("h1")
-    m = re.match(r"(\d+)/(\d+)", h1.get_text(strip=True)) if h1 else None
+    # 「9/28(月)」(直近) と「2025/8/21(木)」(年つき) の両方に対応
+    m = re.match(r"(?:(\d{4})/)?(\d{1,2})/(\d{1,2})", h1.get_text(strip=True)) if h1 else None
     if not m:
         raise ValueError("日別ページの見出しが見つかりません")
-    month, day = int(m.group(1)), int(m.group(2))
-    pub = re.search(r'"datePublished":"(\d{4})-(\d{2})-(\d{2})', html)
-    pub_date = dt.date(*map(int, pub.groups()))
-    date = dt.date(pub_date.year, month, day)
-    if date > pub_date:  # 年またぎ(公開が1月・データが12月)
-        date = dt.date(pub_date.year - 1, month, day)
+    year, month, day = m.group(1), int(m.group(2)), int(m.group(3))
+    if year:
+        date = dt.date(int(year), month, day)
+    else:  # 年が無い場合は公開日時から補う
+        pub = re.search(r'"datePublished":"(\d{4})-(\d{2})-(\d{2})', html)
+        pub_date = dt.date(*map(int, pub.groups()))
+        date = dt.date(pub_date.year, month, day)
+        if date > pub_date:  # 年またぎ(公開が1月・データが12月)
+            date = dt.date(pub_date.year - 1, month, day)
 
     machines, singles = [], {}
     for tab in s.select("div.tab_content"):
@@ -260,8 +264,7 @@ def scrape_day(client, day_url, done=(), since=None, newest=None, keywords=()):
         Path("debug").mkdir(exist_ok=True)
         dump = Path("debug") / f"{urlparse(day_url).path.strip('/')}.html"
         dump.write_text(html, encoding="utf-8")
-        print(f"  想定外のページ: {day_url} -> {dump} に保存(スキップ)", file=sys.stderr)
-        return None, []
+        raise RuntimeError(f"想定外のページ(debug/{dump.name} に保存)") from None
     if since and date < since:
         raise TooOld
     if newest and date > newest:  # 集計途中の直近日は取らない
@@ -323,7 +326,10 @@ def main():
         print("\n中断しました。再実行すれば取得済みの日をスキップして続きから再開します。")
     finally:
         if hasattr(client, "close"):
-            client.close()
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001  (Ctrl+Cでブラウザが先に終了している場合など)
+                pass
 
 
 def _run(a, client, day_urls, done, new_file, path):

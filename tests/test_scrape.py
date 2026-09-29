@@ -62,3 +62,20 @@ def test_machine_filter():
             return read("day_2026-09-28.html") if len(calls) == 1 else read("kishu_neo_imjuggler_ex.html")
     date, rows = scrape_day(C(), "https://min-repo.com/3378289/", keywords=["ネオアイムジャグラー"])
     assert len(calls) == 2 and len(rows) == 24
+
+
+def test_day_with_year_in_heading():
+    html = read("day_2026-09-28.html").replace("<h1>9/28(月)", "<h1>2025/9/28(日)")
+    date, machines, singles = parse_day(html)
+    assert date == dt.date(2025, 9, 28)
+    assert "ネオアイムジャグラーEX" in machines
+
+
+def test_unexpected_page_counts_as_failure(tmp_path, monkeypatch):
+    import pytest
+    from scrape import scrape_day
+    monkeypatch.chdir(tmp_path)
+    class C:
+        def get(self, url): return "<html>blocked</html>"
+    with pytest.raises(RuntimeError):
+        scrape_day(C(), "https://min-repo.com/1/")
